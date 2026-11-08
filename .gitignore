@@ -1,3 +1,19 @@
+.env
+
 .venv/
+
 __pycache__/
 *.py[cod]
+
+# Local market data (DuckDB database, Parquet exports)
+data/
+*.duckdb
+*.duckdb.wal
+
+# Built documentation site (mkdocs build)
+site/
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/

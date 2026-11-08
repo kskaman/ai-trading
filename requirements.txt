@@ -1,3 +1,15 @@
-ccxt
-pandas
-yfinance
+# Runtime dependencies for src/ (data, features, strategies, analytics, execution).
+# Ranges are kept compatible with the pins in pyproject.toml.
+numpy>=1.26,<2
+pandas>=2.2,<3
+pyarrow>=15,<21  # pyarrow 21+ requires numpy 2
+duckdb>=1.0
+pydantic>=2.7
+pydantic-settings>=2.3
+python-dotenv>=1.0
+requests>=2.31
+alpaca-py>=0.43
+ccxt>=4.3
+websockets>=12
+exchange-calendars>=4.5
+statsmodels>=0.14.2,<0.15  # cointegration test for pairs trading (pulls in scipy)

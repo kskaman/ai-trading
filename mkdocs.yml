@@ -1,0 +1,71 @@
+site_name: AI Trading System
+site_description: Market data, features, trading strategies and backtest metrics
+docs_dir: docs
+site_dir: site
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Architecture: architecture.md
+  - How-to guides: guides.md
+  - Strategies: strategies.md
+  - Configuration: configuration.md
+  - API reference:
+      - Ingestion: reference/ingest.md
+      - Providers: reference/providers.md
+      - Store and panels: reference/store.md
+      - Schema: reference/schema.md
+      - Cleaning: reference/cleaning.md
+      - Resilience: reference/resilience.md
+      - Streaming: reference/streaming.md
+      - Features: reference/features.md
+      - Strategies: reference/strategies.md
+      - Analytics: reference/analytics.md
+      - Execution: reference/execution.md
+      - Config: reference/config.md
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            docstring_style: google
+            show_source: false
+            show_root_heading: true
+            show_root_full_path: true
+            heading_level: 2
+            members_order: source
+            filters: ["!^_"]
+            merge_init_into_class: true
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
