@@ -52,6 +52,8 @@ class DataIngestionService:
         settings: Optional[DataSettings] = None,
     ):
         """
+        Wire up providers and an optional store.
+
         Args:
             providers: Provider instances keyed by source name.
             store: Where raw bars are persisted; None disables persistence.
@@ -72,6 +74,15 @@ class DataIngestionService:
 
         A provider whose credentials, SDK or exchange configuration is missing
         or invalid is skipped with a warning rather than failing startup.
+
+        Args:
+            settings: Data settings with credentials and routing; defaults to
+                the global settings.
+            store: Where raw bars are persisted; None disables persistence.
+
+        Returns:
+            A service with 'alpaca' and/or 'ccxt' registered (possibly
+            neither; `fetch` then fails with RuntimeError).
         """
         settings = settings if settings is not None else get_settings().data
 
@@ -92,7 +103,19 @@ class DataIngestionService:
         return cls(providers, store=store, settings=settings)
 
     def _candidates(self, symbol: str, source: Optional[str]) -> List[str]:
-        """Sources to try in order. A pinned source disables failover."""
+        """
+        Choose which sources to try for a symbol, in order.
+
+        Args:
+            symbol: Ticker or pair; pairs ('BTC/USDT') go to the crypto
+                source only, because the backup is an equities source.
+            source: A pinned source name, or None to route automatically.
+
+        Returns:
+            Source names to try: just `source` when pinned, the crypto
+            source for pairs, otherwise the primary then the backup (if set
+            and different).
+        """
         if source is not None:
             return [source]
         if infer_market(symbol) == 'crypto':
@@ -118,6 +141,22 @@ class DataIngestionService:
 
         Any provider error, including an open circuit breaker, moves on to the
         backup source. Passing `source` pins the provider and disables failover.
+
+        Args:
+            symbol: Ticker or pair, e.g. 'AAPL' or 'BTC/USDT'.
+            start_date: Inclusive start (naive means UTC), or None.
+            end_date: Exclusive end (naive means UTC), or None for now.
+            interval: Bar size, e.g. '1d' or '5m'.
+            source: Provider name to use exclusively, e.g. 'alpaca'.
+
+        Returns:
+            The provider's response dict (see
+            `MarketDataProvider.fetch_ohlcv`): symbol, interval, data,
+            n_bars, source and from_cache.
+
+        Raises:
+            RuntimeError: If every candidate source failed or none is
+                registered; the last provider error is chained as the cause.
         """
         candidates = self._candidates(symbol, source)
 
@@ -155,6 +194,13 @@ class DataIngestionService:
         exactly what the provider returned (in the canonical schema).
 
         Args:
+            symbol: Ticker or pair, e.g. 'AAPL' or 'BTC/USDT'.
+            start_date: Inclusive start (naive means UTC), or None.
+            end_date: Exclusive end (naive means UTC), or None for now.
+            interval: Bar size, e.g. '1d' or '5m'.
+            source: Provider name to use exclusively; disables failover.
+            persist: Save the raw bars to the store (ignored if the service
+                has no store).
             fill_gaps: Insert bars missing from the trading calendar
                 (src.market_data.cleaning.forward_fill_gaps).
             clean: Add is_outlier / is_stale / ohlc_valid flags
@@ -163,6 +209,9 @@ class DataIngestionService:
         Returns:
             Canonical OHLCV DataFrame with a 'symbol' column, sorted by
             timestamp (empty if the source had no bars).
+
+        Raises:
+            RuntimeError: If every data source failed (see `fetch`).
         """
         result = self.fetch(symbol, start_date, end_date, interval, source)
         symbol, interval = result['symbol'], result['interval']
@@ -184,7 +233,18 @@ class DataIngestionService:
     def ingest_many(
         self, symbols: Sequence[str], **kwargs: Any
     ) -> Dict[str, pd.DataFrame]:
-        """Ingest several symbols (kwargs go to ingest); failures are logged and skipped."""
+        """
+        Ingest several symbols, carrying on past failures.
+
+        Args:
+            symbols: Tickers and/or pairs, e.g. ['AAPL', 'BTC/USDT'].
+            **kwargs: Passed to `ingest` for every symbol (start_date,
+                interval, clean, ...).
+
+        Returns:
+            DataFrames keyed by symbol. A symbol that failed is logged and
+            left out, so check the keys if you need all of them.
+        """
         results: Dict[str, pd.DataFrame] = {}
         for symbol in symbols:
             try:

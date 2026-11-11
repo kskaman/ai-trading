@@ -23,11 +23,23 @@ def volume_features(
     mfi_period: int = MFI_PERIOD,
 ) -> pd.DataFrame:
     """
-    volume_ratio_{w}: volume / mean volume of the last w bars.
-    obv_ratio_{w}: rolling on-balance volume / total volume, in [-1, 1]
-        (+1 = all volume on up bars, -1 = all on down bars).
-    vwap_deviation_{w}: close / rolling w-bar VWAP - 1.
-    mfi_{p}: money flow index.
+    Compute volume and money-flow features over rolling windows.
+
+    Args:
+        df: Bars for one symbol with 'high', 'low', 'close' and 'volume'
+            columns, sorted by time.
+        ratio_windows: Look-back lengths in bars for `volume_ratio_{w}`.
+        flow_window: Look-back length in bars for OBV ratio and VWAP.
+        mfi_period: Look-back length in bars for the money flow index.
+
+    Returns:
+        DataFrame on `df.index` with these columns:
+
+        - volume_ratio_{w}: volume / mean volume of the last w bars.
+        - obv_ratio_{w}: rolling on-balance volume / total volume, in
+            [-1, 1] (+1 = all volume on up bars, -1 = all on down bars).
+        - vwap_deviation_{w}: close / rolling w-bar VWAP - 1.
+        - mfi_{p}: money flow index, 0 to 100.
     """
     close, volume = df['close'], df['volume']
     out = {}

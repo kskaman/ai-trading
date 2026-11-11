@@ -15,6 +15,18 @@ if TYPE_CHECKING:
 
 
 def alpaca_credentials(settings: DataSettings) -> Tuple[str, str]:
+    """
+    Read the Alpaca API key and secret from settings.
+
+    Args:
+        settings: Data settings holding ALPACA_API_KEY / ALPACA_API_SECRET.
+
+    Returns:
+        (key, secret) as plain strings.
+
+    Raises:
+        ValueError: If either value is missing or empty.
+    """
     key = settings.alpaca_api_key.get_secret_value() if settings.alpaca_api_key else ''
     secret = settings.alpaca_api_secret.get_secret_value() if settings.alpaca_api_secret else ''
     if not key or not secret:
@@ -26,7 +38,16 @@ def alpaca_credentials(settings: DataSettings) -> Tuple[str, str]:
 
 
 def alpaca_retryable_errors() -> Tuple[type, ...]:
-    """Transient errors alpaca-py surfaces (it uses requests under the hood)."""
+    """
+    List the transient errors alpaca-py can raise, for the retry policy.
+
+    alpaca-py uses `requests` under the hood, so its network errors are
+    `requests` exceptions rather than Python's built-in ones.
+
+    Returns:
+        Exception types that should be retried and counted by the
+        circuit breaker.
+    """
     import requests
 
     return (
@@ -38,6 +59,18 @@ def alpaca_retryable_errors() -> Tuple[type, ...]:
 
 
 def _alpaca_timeframe(interval: str):
+    """
+    Translate a canonical interval into alpaca-py's `TimeFrame`.
+
+    Args:
+        interval: Canonical interval, e.g. '1d' or '5m'.
+
+    Returns:
+        The matching `alpaca.data.timeframe.TimeFrame`.
+
+    Raises:
+        KeyError: If the interval is not canonical (callers normalize first).
+    """
     from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
     frames = {
@@ -67,22 +100,50 @@ class AlpacaDataClient(MarketDataProvider):
         data_client: Optional['StockHistoricalDataClient'] = None,
     ):
         """
+        Check credentials now; the SDK client is created lazily.
+
         Args:
             settings: Data settings; defaults to the global settings.
             data_client: Pre-built StockHistoricalDataClient (or a test
                 double). Created from the credentials on first use if None.
+
+        Raises:
+            ValueError: If the Alpaca credentials are missing.
         """
         super().__init__(settings, retryable=alpaca_retryable_errors())
         self.api_key, self.api_secret = alpaca_credentials(self.settings)
         self._data_client = data_client
 
     def _get_data_client(self):
+        """
+        Return the SDK client, creating it on first use.
+
+        Returns:
+            The injected client, or a new `StockHistoricalDataClient` built
+            from the stored credentials.
+        """
         if self._data_client is None:
             from alpaca.data.historical import StockHistoricalDataClient
             self._data_client = StockHistoricalDataClient(self.api_key, self.api_secret)
         return self._data_client
 
     def _fetch_bars(self, symbol, start_date, end_date, interval) -> List[Bar]:
+        """
+        Request split-adjusted bars from Alpaca.
+
+        Alpaca treats `end` as inclusive, so bars at or after `end_date`
+        are dropped here to keep the end exclusive like every provider.
+
+        Args:
+            symbol: Upper-case ticker, e.g. 'AAPL'.
+            start_date: Inclusive start, or None for Alpaca's default.
+            end_date: Exclusive end, or None for "up to now".
+            interval: Canonical interval, e.g. '1d'.
+
+        Returns:
+            Bars as dicts (see `MarketDataProvider._fetch_bars`); empty if
+            Alpaca has no data for the symbol in that range.
+        """
         from alpaca.data.enums import Adjustment
         from alpaca.data.requests import StockBarsRequest
 

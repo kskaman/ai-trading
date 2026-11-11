@@ -1,49 +1,24 @@
 # Architecture
 
+## The system
+
+[![AI trading system overview](diagrams/system-overview.svg)](diagrams/system-overview.html)
+
+*Click any diagram to open the interactive version (search, focus, light/dark).*
+
 ## The pipeline
 
 `DataIngestionService.ingest()` runs the whole data path for one symbol:
 
-```text
- 'AAPL' / 'BTC/USDT'
-        │
-        ▼
- 1. Route          pairs ('/') → crypto source (ccxt), everything else → primary (alpaca)
-        │
-        ▼
- 2. Fetch          provider.fetch_ohlcv()  ── every call goes through ResilientExecutor:
-        │                                     retry transient errors, circuit breaker,
-        │                                     then fail over primary → backup (stocks only)
-        ▼
- 3. Normalize      bars_to_frame()          one DataFrame shape for every source
-        │
-        ├────────► 4. Store raw   FinancialDataStore.ingest_ohlcv()   (exactly as fetched)
-        ▼
- 5. Fill gaps      forward_fill_gaps()      optional: insert bars missing from the calendar
-        │
-        ▼
- 6. Clean          clean_ohlcv()            optional: add is_outlier / is_stale / ohlc_valid
-        │
-        ▼
-     DataFrame ──► FeatureEngineer.compute_all_features()   model inputs
-              └──► forward_returns()                         prediction targets (kept separate)
-```
+[![Market data ingestion pipeline](diagrams/ingestion-pipeline.svg)](diagrams/ingestion-pipeline.html)
+
+The resulting DataFrame feeds two places that must stay apart:
+`FeatureEngineer.compute_all_features()` for model inputs, and
+`forward_returns()` for prediction targets (see rule 7).
 
 Strategies work across symbols, so they start from the store instead:
 
-```text
- load_panel()                 one close-price column per symbol
-        │
-        ▼
- strategy.target_weights()    one weight column per symbol (see rule 9)
-        │
-        ├────────► weights_to_signals()   LONG_ENTER / LONG_EXIT / SHORT_ENTER / SHORT_EXIT
-        ▼
- portfolio_returns()          hold weights from the next bar, subtract costs
-        │
-        ▼
- PerformanceAnalyzer          Sharpe, Sortino, drawdown, deflated Sharpe, ...
-```
+[![Strategy research backtest](diagrams/strategy-backtest.svg)](diagrams/strategy-backtest.html)
 
 ## Where things live
 
@@ -66,9 +41,9 @@ Strategies work across symbols, so they start from the store instead:
 | `src/models/` | Interface for ML models (next) | `BaseModel` |
 
 Dependencies point one way: `features`, `strategies` and `execution` may use
-`data`; `analytics` uses neither `strategies` nor `execution` (it only needs
-weights and prices); `data` never imports anything above it; everything
-reads `config`.
+`market_data`; `analytics` uses neither `strategies` nor `execution` (it only
+needs weights and prices); `market_data` never imports anything above it;
+everything reads `config`.
 
 ## Rules every module follows
 
@@ -102,7 +77,10 @@ not run from one symbol into the next, so mixed frames raise `ValueError`.
 
 **6. Windows are counted in bars**, so `return_5` is five days on daily data
 and 25 minutes on 5-minute data. Volatility is annualized using the interval and
-market (252 sessions a year for stocks, 365 days for crypto).
+market (252 sessions a year for stocks, 365 days for crypto). Intraday stock
+bars assume whole bars in a regular 09:30–16:00 session (1h = 7 a day); for
+data with extended hours, measure the real count with
+`estimate_periods_per_year()` and pass it as `periods_per_year`.
 
 **7. Features never look at the future; labels do.** Every feature at row *t*
 uses only rows up to *t* (a test enforces this). Forward returns live in
@@ -132,6 +110,19 @@ from bar *t + 1*. Leverage belongs to the risk layer, not the strategy.
 Each provider declares which exceptions count as transient, because client
 libraries raise their own types (`ccxt.NetworkError`, `requests` errors) rather
 than Python's built-in `ConnectionError`.
+
+How `ResilientExecutor` moves between `CLOSED`, `OPEN` and `HALF_OPEN`:
+
+[![Retry and circuit breaker lifecycle](diagrams/retry-circuit-breaker.svg)](diagrams/retry-circuit-breaker.html)
+
+How the WebSocket feed connects, reconnects and gives up:
+
+[![Alpaca WebSocket feed lifecycle](diagrams/websocket-feed.svg)](diagrams/websocket-feed.html)
+
+Which broker calls go through `ResilientExecutor` (account queries) and which
+never do (market orders):
+
+[![Broker calls and order placement](diagrams/broker-execution.svg)](diagrams/broker-execution.html)
 
 ## Not built yet
 

@@ -11,15 +11,15 @@ Windows are measured in bars. Targets (forward returns) are deliberately not
 produced here; see src.features.labels.
 """
 
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
 
 from src.market_data.schema import (
-    NUMERIC_COLUMNS, check_market, normalize_interval, periods_per_year,
-    require_single_symbol,
+    NUMERIC_COLUMNS, check_market, normalize_interval, require_single_symbol,
 )
+from src.market_data.schema import periods_per_year as conventional_periods_per_year
 from src.features.momentum import momentum_features
 from src.features.patterns import pattern_features
 from src.features.returns import return_features
@@ -35,12 +35,31 @@ class FeatureEngineer:
         interval: Bar interval of the input ('1d', '5m', ...).
         market: 'equity' or 'crypto'; with the interval it sets the
             annualization factor (252 sessions vs 365 days, bars per day).
+        periods_per_year: Bars per year to annualize volatility with,
+            overriding the convention from `schema.periods_per_year`. Pass
+            `schema.estimate_periods_per_year(df['timestamp'], market)` for
+            intraday equity data, whose real bar count depends on extended
+            hours and how bars are aligned.
+
+    Raises:
+        ValueError: If the interval or market is unsupported, or
+            `periods_per_year` is not positive.
     """
 
-    def __init__(self, interval: str = '1d', market: str = 'equity'):
+    def __init__(
+        self,
+        interval: str = '1d',
+        market: str = 'equity',
+        periods_per_year: Optional[float] = None,
+    ):
+        """Validate the interval and market and work out bars per year."""
         self.interval = normalize_interval(interval)
         self.market = check_market(market)
-        self.periods_per_year = periods_per_year(self.interval, self.market)
+        if periods_per_year is None:
+            periods_per_year = conventional_periods_per_year(self.interval, self.market)
+        elif not periods_per_year > 0:
+            raise ValueError(f"periods_per_year must be positive, got {periods_per_year}")
+        self.periods_per_year = float(periods_per_year)
         self.feature_names: List[str] = []
 
     def compute_all_features(self, df: pd.DataFrame) -> pd.DataFrame:

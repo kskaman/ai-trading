@@ -12,7 +12,8 @@ The timeline depends on the market:
 """
 
 import logging
-from typing import Optional
+from datetime import date
+from typing import Optional, Union
 
 import pandas as pd
 
@@ -27,25 +28,60 @@ _NEW_YORK = 'America/New_York'
 
 
 def _as_utc(value) -> pd.Timestamp:
+    """
+    Turn a date bound into a UTC timestamp.
+
+    Args:
+        value: Anything `pd.Timestamp` accepts, e.g. '2024-01-01' or a
+            datetime. Naive values are taken to be UTC.
+
+    Returns:
+        A tz-aware UTC timestamp.
+    """
     ts = pd.Timestamp(value)
     return ts.tz_localize('UTC') if ts.tzinfo is None else ts.tz_convert('UTC')
 
 
 def _new_york_date(value) -> pd.Timestamp:
-    """Session date for a bound: naive values are already New York dates."""
+    """
+    Turn a date bound into a New York session date.
+
+    Args:
+        value: Anything `pd.Timestamp` accepts. Naive values are already
+            New York dates; tz-aware ones are converted to New York first.
+
+    Returns:
+        A naive timestamp at midnight of that New York date.
+    """
     ts = pd.Timestamp(value)
     if ts.tzinfo is not None:
         ts = ts.tz_convert(_NEW_YORK).tz_localize(None)
     return ts.normalize()
 
 
-def expected_timestamps(start, end, interval: str, market: str) -> pd.DatetimeIndex:
+def expected_timestamps(
+    start: Union[str, date], end: Union[str, date], interval: str, market: str
+) -> pd.DatetimeIndex:
     """
     Bar timestamps a complete series would contain between start and end
     (both inclusive), in UTC.
 
     Naive bounds mean UTC for crypto, and New York calendar dates for daily
     equities (so '2024-01-31' includes the January 31 session).
+
+    Args:
+        start: First bound, inclusive; a string, date or timestamp.
+        end: Last bound, inclusive; same forms as `start`.
+        interval: Bar size, e.g. '1d' or '1h'.
+        market: 'equity' (NYSE sessions) or 'crypto' (every step, 24/7).
+
+    Returns:
+        Expected bar open times in UTC, sorted.
+
+    Raises:
+        ValueError: If the interval or market is not supported.
+        NotImplementedError: For intraday equity intervals; pass
+            `expected` to `forward_fill_gaps` instead.
     """
     interval = normalize_interval(interval)
     check_market(market)

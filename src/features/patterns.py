@@ -8,11 +8,23 @@ BOLLINGER_PERIOD = 20
 
 def pattern_features(df: pd.DataFrame, bb_period: int = BOLLINGER_PERIOD) -> pd.DataFrame:
     """
-    range_pct: (high - low) / close.
-    close_position: where the close sits in the bar's range (0 = low, 1 = high).
-    body_size: |close - open| / open.
-    upper_wick, lower_wick: wick lengths as a fraction of close.
-    bb_position_{p}: position within 2-sigma Bollinger Bands (0 = lower, 1 = upper).
+    Describe each candle's shape and where the close sits in its bands.
+
+    Args:
+        df: Bars for one symbol with 'open', 'high', 'low' and 'close'
+            columns, sorted by time.
+        bb_period: Bollinger Band window in bars.
+
+    Returns:
+        DataFrame on `df.index` with these columns:
+
+        - range_pct: (high - low) / close.
+        - close_position: where the close sits in the bar's range
+            (0 = low, 1 = high); NaN when high == low.
+        - body_size: |close - open| / open.
+        - upper_wick, lower_wick: wick lengths as a fraction of close.
+        - bb_position_{p}: position within 2-sigma Bollinger Bands
+            (0 = lower band, 1 = upper band; can go outside 0..1).
     """
     o, h, l, c = df['open'], df['high'], df['low'], df['close']
     bar_range = (h - l).replace(0, np.nan)

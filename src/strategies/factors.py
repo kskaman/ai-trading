@@ -108,7 +108,14 @@ class MultiFactorModel(BaseStrategy):
         self.validate()
 
     def get_parameters(self) -> Dict[str, Any]:
-        """Parameters for experiment tracking."""
+        """
+        Report the parameters for experiment tracking.
+
+        Returns:
+            Dict of factor_weights (a copy), momentum_lookback,
+            momentum_skip, volatility_window, n_long, n_short and
+            rebalance_every.
+        """
         return {
             'factor_weights': dict(self.factor_weights),
             'momentum_lookback': self.momentum_lookback,
@@ -122,6 +129,9 @@ class MultiFactorModel(BaseStrategy):
     def validate(self) -> bool:
         """
         Check parameter ranges.
+
+        Returns:
+            True when every parameter is valid.
 
         Raises:
             ValueError: If there are no factor weights, a window is too
@@ -138,13 +148,32 @@ class MultiFactorModel(BaseStrategy):
         return True
 
     def momentum_factor(self, prices: pd.DataFrame) -> pd.DataFrame:
-        """Cross-sectional z-score of skip-adjusted past return."""
+        """
+        Score symbols by past return, skipping the most recent bars.
+
+        Args:
+            prices: Close-price panel.
+
+        Returns:
+            Panel of z-scores across symbols on each bar; higher means a
+            stronger past return. NaN until enough history exists.
+        """
         past = prices.shift(self.momentum_skip)
         raw = past / prices.shift(self.momentum_lookback + self.momentum_skip) - 1
         return cross_sectional_zscore(raw)
 
     def low_volatility_factor(self, prices: pd.DataFrame) -> pd.DataFrame:
-        """Cross-sectional z-score of negative rolling volatility (calm is high)."""
+        """
+        Score symbols by how calm their recent prices were.
+
+        Args:
+            prices: Close-price panel (positive prices).
+
+        Returns:
+            Panel of z-scores across symbols on each bar; higher means
+            lower rolling volatility of log returns. NaN for the first
+            `volatility_window` bars.
+        """
         log_returns = np.log(prices).diff()
         volatility = log_returns.rolling(self.volatility_window).std()
         return -cross_sectional_zscore(volatility)
@@ -161,6 +190,10 @@ class MultiFactorModel(BaseStrategy):
             prices: Close-price panel.
             extra_factors: Additional panels, z-scored here so they are on
                 the same scale as the built-in factors.
+
+        Returns:
+            Panels keyed by factor name ('momentum', 'low_volatility', plus
+            any extras), all aligned to `prices`.
         """
         panels = {
             'momentum': self.momentum_factor(prices),
@@ -176,7 +209,21 @@ class MultiFactorModel(BaseStrategy):
         prices: pd.DataFrame,
         extra_factors: Optional[Mapping[str, pd.DataFrame]] = None,
     ) -> pd.DataFrame:
-        """Weighted factor mix used for ranking (see `combine_factors`)."""
+        """
+        Mix the factors into one score per symbol and bar, for ranking.
+
+        Args:
+            prices: Close-price panel.
+            extra_factors: Additional factor panels named in
+                `factor_weights` (see `factors`).
+
+        Returns:
+            Composite score panel aligned to `prices` (see
+            `combine_factors`); higher ranks better.
+
+        Raises:
+            ValueError: If `factor_weights` names a factor that is missing.
+        """
         return combine_factors(self.factors(prices, extra_factors), self.factor_weights)
 
     def target_weights(
@@ -190,6 +237,10 @@ class MultiFactorModel(BaseStrategy):
         Args:
             prices: Close-price panel with at least n_long + n_short symbols.
             extra_factors: Additional factor panels named in factor_weights.
+
+        Returns:
+            Weights panel shaped like `prices`, all zero until the first
+            rebalance.
         """
         return long_short_weights(
             self.composite_score(prices, extra_factors),
@@ -205,5 +256,9 @@ class MultiFactorModel(BaseStrategy):
         Args:
             data: Long OHLCV frame with several symbols.
             features: Unused.
+
+        Returns:
+            Signal rows with columns timestamp, symbol, signal_type and
+            strength (see `weights_to_signals`).
         """
         return weights_to_signals(self.target_weights(to_panel(data)))

@@ -31,12 +31,27 @@ EXCHANGE_MAP = {
 
 
 def normalize_ccxt_symbol(symbol: str) -> str:
-    """'btc-usdt' -> 'BTC/USDT'."""
+    """
+    Put a crypto pair in CCXT's unified 'BASE/QUOTE' form.
+
+    Args:
+        symbol: A pair written with '/' or '-', any case, e.g. 'btc-usdt'.
+
+    Returns:
+        The CCXT form, e.g. 'BTC/USDT'.
+    """
     return symbol.strip().upper().replace('-', '/')
 
 
 def ccxt_error_policy() -> Tuple[Tuple[type, ...], Tuple[type, ...]]:
-    """(retryable, non_retryable) exception types for CCXT calls."""
+    """
+    Sort CCXT's exceptions into ones to retry and ones to raise at once.
+
+    Returns:
+        (retryable, non_retryable). Retryable is `ccxt.NetworkError`
+        (timeouts, rate limits, exchange down); non-retryable covers bad
+        input and authentication failures.
+    """
     import ccxt
 
     retryable = (ccxt.NetworkError,)  # timeouts, rate limits, exchange down
@@ -61,6 +76,10 @@ def create_exchange(
         sandbox: Use the exchange testnet.
         require_sandbox: Raise instead of falling back to production when the
             exchange has no testnet (used for order placement).
+
+    Returns:
+        A configured `ccxt.Exchange` with rate limiting on and a 30 s
+        timeout. Markets are not loaded yet.
 
     Raises:
         ValueError: Unknown exchange, or no testnet while `require_sandbox`.
@@ -109,10 +128,15 @@ class CryptoExchangeClient(MarketDataProvider):
         exchange: Optional['ccxt.Exchange'] = None,
     ):
         """
+        Set up the exchange connection with CCXT's error policy.
+
         Args:
             settings: Data settings; defaults to the global settings.
             exchange: Pre-built CCXT exchange (or a test double). Built from
                 settings (ccxt_exchange_id, ccxt_sandbox) if None.
+
+        Raises:
+            ValueError: If the configured exchange id is unknown to CCXT.
         """
         retryable, non_retryable = ccxt_error_policy()
         super().__init__(settings, non_retryable=non_retryable, retryable=retryable)
@@ -126,15 +150,48 @@ class CryptoExchangeClient(MarketDataProvider):
         self._markets: Optional[Dict[str, Any]] = None
 
     def normalize_symbol(self, symbol: str) -> str:
+        """
+        Put a pair in CCXT's 'BASE/QUOTE' form (see `normalize_ccxt_symbol`).
+
+        Args:
+            symbol: A pair such as 'btc-usdt' or 'BTC/USDT'.
+
+        Returns:
+            The CCXT form, e.g. 'BTC/USDT'.
+        """
         return normalize_ccxt_symbol(symbol)
 
     def _ensure_markets(self) -> Dict[str, Any]:
+        """
+        Load the exchange's market list once and reuse it.
+
+        Returns:
+            CCXT's markets dict, keyed by unified symbol ('BTC/USDT').
+        """
         if self._markets is None:
             logger.info("Loading markets for %s...", self.exchange_id)
             self._markets = self._executor.call(self.exchange.load_markets)
         return self._markets
 
     def _fetch_bars(self, symbol, start_date, end_date, interval) -> List[Bar]:
+        """
+        Download candles from the exchange, paging through long ranges.
+
+        With no start date, returns the `ccxt_default_limit` candles before
+        `end_date` (or the latest ones when there is no end either).
+
+        Args:
+            symbol: Unified pair, e.g. 'BTC/USDT'.
+            start_date: Inclusive start, or None (see above).
+            end_date: Exclusive end, or None for "up to now".
+            interval: Canonical interval, e.g. '1h'.
+
+        Returns:
+            Bars as dicts (see `MarketDataProvider._fetch_bars`).
+
+        Raises:
+            ValueError: If the exchange does not list the symbol.
+        """
         if symbol not in self._ensure_markets():
             raise ValueError(
                 f"Symbol '{symbol}' not found on {self.exchange_id}. "
@@ -176,6 +233,18 @@ class CryptoExchangeClient(MarketDataProvider):
         Stops on an empty page, never on a short one: exchanges cap page
         sizes below ccxt_page_limit (Kraken 720, Coinbase/OKX 300), so a
         short page does not mean the range is exhausted.
+
+        Args:
+            symbol: Unified pair, e.g. 'BTC/USDT'.
+            interval: Canonical interval, e.g. '1h'.
+            since: First candle time to request, epoch milliseconds.
+            until: Stop once the next page would start at or after this
+                time (epoch ms), or None to page until the latest candle.
+            step_ms: Length of one candle in milliseconds.
+
+        Returns:
+            Raw CCXT candles [timestamp_ms, open, high, low, close, volume].
+            May include candles at or after `until`; the caller trims them.
         """
         raw: List[list] = []
         while True:
@@ -191,7 +260,19 @@ class CryptoExchangeClient(MarketDataProvider):
         return raw
 
     def get_order_book(self, symbol: str, limit: int = 20) -> Dict[str, Any]:
-        """Fetch the current order book (`limit` price levels per side)."""
+        """
+        Fetch the current order book.
+
+        Args:
+            symbol: Pair in any form `normalize_ccxt_symbol` accepts.
+            limit: Price levels to return per side. Some exchanges only
+                accept specific values (e.g. 5, 10, 20, 50, 100).
+
+        Returns:
+            Dict with symbol, bids and asks (lists of [price, amount],
+            best price first) and timestamp (ISO 8601, may be None if the
+            exchange does not send one).
+        """
         self._ensure_markets()
         order_book = self._executor.call(
             self.exchange.fetch_order_book, normalize_ccxt_symbol(symbol), limit=limit
@@ -205,5 +286,10 @@ class CryptoExchangeClient(MarketDataProvider):
         }
 
     def list_symbols(self) -> List[str]:
-        """List all available trading symbols on the exchange."""
+        """
+        List all trading pairs the exchange offers.
+
+        Returns:
+            Unified symbols such as 'BTC/USDT', sorted alphabetically.
+        """
         return sorted(self._ensure_markets().keys())

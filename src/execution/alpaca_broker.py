@@ -27,10 +27,17 @@ class AlpacaBroker:
         trading_client: Optional['TradingClient'] = None,
     ):
         """
+        Check credentials now; the SDK client is created lazily.
+
         Args:
-            settings: Execution settings; defaults to the global settings.
-            retry_settings: Retry/circuit-breaker policy (DATA_* settings).
+            settings: Execution settings with credentials and the paper/live
+                switch; defaults to the global settings.
+            retry_settings: Retry/circuit-breaker policy (DATA_* settings);
+                defaults to the global settings.
             trading_client: Pre-built alpaca TradingClient (or a test double).
+
+        Raises:
+            ValueError: If the Alpaca credentials are missing.
         """
         settings = settings if settings is not None else get_settings().execution
         key = settings.api_key.get_secret_value() if settings.api_key else ''
@@ -50,14 +57,37 @@ class AlpacaBroker:
         )
 
     def _get_client(self):
+        """
+        Return the SDK client, creating it on first use.
+
+        Returns:
+            The injected client, or a new `TradingClient` for the paper or
+            live account depending on settings.
+        """
         if self._client is None:
             from alpaca.trading.client import TradingClient
             self._client = TradingClient(self._api_key, self._api_secret, paper=self.paper)
         return self._client
 
     def get_account_info(self) -> Dict[str, Any]:
-        """Retrieve account information including equity and buying power."""
+        """
+        Retrieve account information (retried on network errors).
+
+        Returns:
+            Dict with total_equity, cash, buying_power and last_equity (all
+            floats in account currency; last_equity is the previous close)
+            and daytrade_count (an int).
+
+        Raises:
+            CircuitBreakerOpen: If Alpaca has been failing repeatedly.
+        """
         def _fetch():
+            """
+            Make one account request; called through the retry executor.
+
+            Returns:
+                The account dict described above.
+            """
             account = self._get_client().get_account()
             return {
                 'total_equity': float(account.equity),
@@ -70,8 +100,23 @@ class AlpacaBroker:
         return self._executor.call(_fetch)
 
     def get_positions(self) -> List[Dict[str, Any]]:
-        """Retrieve current open positions."""
+        """
+        Retrieve current open positions (retried on network errors).
+
+        Returns:
+            One dict per position with symbol, qty (negative for shorts),
+            market_value, unrealized_pl and avg_entry_price. Empty if flat.
+
+        Raises:
+            CircuitBreakerOpen: If Alpaca has been failing repeatedly.
+        """
         def _fetch():
+            """
+            Make one positions request; called through the retry executor.
+
+            Returns:
+                The list of position dicts described above.
+            """
             return [
                 {
                     'symbol': pos.symbol,

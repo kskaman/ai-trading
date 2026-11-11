@@ -17,3 +17,6 @@ site/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Archify working files (candidates, review receipts); final diagrams live in docs/diagrams/
+.archify/

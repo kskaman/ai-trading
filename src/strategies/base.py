@@ -57,9 +57,26 @@ class BaseStrategy(ABC):
 
     @abstractmethod
     def get_parameters(self) -> Dict[str, Any]:
-        """Return strategy hyperparameters for tracking and reproducibility."""
+        """
+        Report the strategy's hyperparameters for tracking and reproducibility.
+
+        Returns:
+            Parameter names mapped to their current values; enough to
+            rebuild the same strategy with `type(s)(**params)`.
+        """
         pass
 
     def validate(self) -> bool:
-        """Validate that strategy parameters are within acceptable ranges."""
+        """
+        Check that strategy parameters are within acceptable ranges.
+
+        The base version accepts everything; subclasses override it.
+
+        Returns:
+            True when the parameters are valid. Invalid parameters raise
+            instead of returning False.
+
+        Raises:
+            ValueError: In subclasses, if a parameter is out of range.
+        """
         return True

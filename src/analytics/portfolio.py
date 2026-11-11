@@ -30,6 +30,11 @@ def portfolio_returns(
     costs `cost_bps` per unit of weight traded (1.0 = the whole portfolio).
     A missing price counts as a zero return for that symbol and bar.
 
+    Holdings are assumed to sit exactly at the target weights on every bar.
+    Real holdings drift as prices move, and trading them back costs money;
+    neither the drift nor that cost is modeled here. Tracking actual shares
+    and cash belongs to an event-driven backtester.
+
     Args:
         weights: Weights panel (see src.strategies.weights).
         prices: Close-price panel covering every symbol in `weights`.

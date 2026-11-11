@@ -18,7 +18,7 @@ import random
 import threading
 import time
 from enum import Enum
-from typing import TYPE_CHECKING, Callable, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar
 
 from src.config.settings import get_settings
 
@@ -34,6 +34,8 @@ class CircuitBreakerOpen(RuntimeError):
 
 
 class CircuitState(Enum):
+    """Breaker state: CLOSED admits calls, OPEN rejects them, HALF_OPEN runs one probe."""
+
     CLOSED = "closed"
     OPEN = "open"
     HALF_OPEN = "half_open"
@@ -62,9 +64,25 @@ class ResilientExecutor:
         ),
         settings: Optional[DataSettings] = None,
     ) -> None:
-        # Numeric policy comes from DataSettings (DATA_* env vars / .env),
-        # which already validates ranges. Pass `settings` to use an injected
-        # configuration instead of the global one.
+        """
+        Create an executor in the CLOSED state.
+
+        Retry counts, delays, the failure threshold and the cooldown come
+        from DataSettings (DATA_* env vars / .env), which validates them.
+
+        Args:
+            name: Label used in log messages and errors, e.g. 'alpaca'.
+            non_retryable: Errors raised at once and never counted by the
+                breaker, even if they also appear in `retryable_exceptions`.
+            retryable_exceptions: Transient errors to retry and count. Any
+                other exception is raised at once without counting. Pass the
+                types your client library really raises.
+            settings: Data settings; defaults to the global settings.
+
+        Raises:
+            TypeError: If either exception argument is not a tuple of
+                Exception classes.
+        """
         cfg = settings if settings is not None else get_settings().data
 
         for key, value in (
@@ -94,16 +112,36 @@ class ResilientExecutor:
 
     @property
     def state(self) -> CircuitState:
+        """Current breaker state (read under the lock)."""
         with self._lock:
             return self._state
 
     @property
     def consecutive_failures(self) -> int:
+        """Failed operations in a row since the last success; resets to 0 on success."""
         with self._lock:
             return self._consecutive_failures
 
-    def call(self, func: Callable[..., T], *args, **kwargs) -> T:
-        """Execute a synchronous callable; propagate its final exception."""
+    def call(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+        """
+        Run `func(*args, **kwargs)` with retries and circuit breaking.
+
+        Args:
+            func: A synchronous callable, e.g. a provider's API method.
+            *args: Positional arguments passed to `func`.
+            **kwargs: Keyword arguments passed to `func`.
+
+        Returns:
+            Whatever `func` returns.
+
+        Raises:
+            CircuitBreakerOpen: If the breaker is OPEN (still cooling down),
+                a probe is already running, or the breaker opened while this
+                call was waiting to retry.
+            TypeError: If `func` returns a coroutine or other awaitable.
+            Exception: Whatever `func` last raised, once retries are used up
+                or immediately for a non-retryable error.
+        """
         is_probe, generation = self._admit()
         if is_probe:
             try:
@@ -160,7 +198,22 @@ class ResilientExecutor:
         raise AssertionError("unreachable")
 
     @staticmethod
-    def _invoke(func: Callable[..., T], *args, **kwargs) -> T:
+    def _invoke(func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+        """
+        Call `func` once and refuse async functions.
+
+        Args:
+            func: The callable to run.
+            *args: Positional arguments for `func`.
+            **kwargs: Keyword arguments for `func`.
+
+        Returns:
+            What `func` returned.
+
+        Raises:
+            TypeError: If `func` returned an awaitable. A coroutine is closed
+                first so Python does not warn that it was never awaited.
+        """
         result = func(*args, **kwargs)
         if inspect.isawaitable(result):
             if inspect.iscoroutine(result):
@@ -169,6 +222,18 @@ class ResilientExecutor:
         return result
 
     def _admit(self) -> tuple[bool, int]:
+        """
+        Decide whether a new call may run, moving OPEN to HALF_OPEN after the cooldown.
+
+        Returns:
+            (is_probe, generation). `is_probe` is True when this call is the
+            single HALF_OPEN probe. `generation` identifies the circuit era,
+            so a slow call cannot change state that has moved on since.
+
+        Raises:
+            CircuitBreakerOpen: If the cooldown has not passed or a probe is
+                already running.
+        """
         with self._lock:
             if self._state is CircuitState.CLOSED:
                 return False, self._generation
@@ -188,16 +253,37 @@ class ResilientExecutor:
             return True, self._generation
 
     def _check_still_closed(self, generation: int) -> None:
+        """
+        Stop retrying if another call opened the breaker during our backoff.
+
+        Args:
+            generation: The era returned by `_admit` for this call.
+
+        Raises:
+            CircuitBreakerOpen: If the state or era has changed.
+        """
         with self._lock:
             if self._state is not CircuitState.CLOSED or self._generation != generation:
                 raise CircuitBreakerOpen(f"[{self.name}] circuit opened during retry backoff")
 
     def _operation_succeeded(self, generation: int) -> None:
+        """
+        Reset the failure count after a successful normal call.
+
+        Args:
+            generation: The call's era; ignored if the circuit has moved on.
+        """
         with self._lock:
             if self._state is CircuitState.CLOSED and self._generation == generation:
                 self._consecutive_failures = 0
 
     def _operation_failed(self, generation: int) -> None:
+        """
+        Count a call whose retries all failed; open the breaker at the threshold.
+
+        Args:
+            generation: The call's era; ignored if the circuit has moved on.
+        """
         with self._lock:
             if self._state is not CircuitState.CLOSED or self._generation != generation:
                 return
@@ -213,6 +299,12 @@ class ResilientExecutor:
                 )
 
     def _probe_succeeded(self, generation: int) -> None:
+        """
+        Close the breaker after the HALF_OPEN probe worked.
+
+        Args:
+            generation: The probe's era; ignored if the circuit has moved on.
+        """
         with self._lock:
             if self._state is CircuitState.HALF_OPEN and self._generation == generation:
                 self._state = CircuitState.CLOSED
@@ -222,6 +314,12 @@ class ResilientExecutor:
                 logger.info("[%s] circuit CLOSED: probe succeeded", self.name)
 
     def _probe_failed(self, generation: int) -> None:
+        """
+        Reopen the breaker with a fresh cooldown after a retryable probe error.
+
+        Args:
+            generation: The probe's era; ignored if the circuit has moved on.
+        """
         with self._lock:
             if self._state is CircuitState.HALF_OPEN and self._generation == generation:
                 self._state = CircuitState.OPEN
@@ -230,6 +328,15 @@ class ResilientExecutor:
                 logger.error("[%s] circuit OPEN: probe failed", self.name)
 
     def _probe_aborted(self, generation: int) -> None:
+        """
+        Return to OPEN without a new cooldown after a non-retryable probe error.
+
+        Bad input says nothing about the provider's health, so the expired
+        cooldown is kept and the next call may probe straight away.
+
+        Args:
+            generation: The probe's era; ignored if the circuit has moved on.
+        """
         with self._lock:
             if self._state is CircuitState.HALF_OPEN and self._generation == generation:
                 # The exception is not evidence of provider health; restore

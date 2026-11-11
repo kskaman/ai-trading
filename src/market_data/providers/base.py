@@ -13,7 +13,7 @@ and volume; src.market_data.schema.bars_to_frame turns them into a DataFrame.
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any, Dict, List, Optional, SupportsFloat, Tuple, Type, Union
 
 import pandas as pd
 
@@ -26,18 +26,54 @@ ExceptionTypes = Tuple[Type[Exception], ...]
 
 
 def to_utc(value: str) -> datetime:
-    """Parse a date/time bound as a tz-aware UTC datetime (naive means UTC)."""
+    """
+    Parse a date/time bound as a tz-aware UTC datetime.
+
+    Args:
+        value: A date or datetime string such as '2024-01-01' or
+            '2024-01-01T09:30:00-05:00'. Naive values are taken to be UTC.
+
+    Returns:
+        The same instant as a timezone-aware UTC `datetime`.
+    """
     ts = pd.Timestamp(value)
     ts = ts.tz_localize('UTC') if ts.tzinfo is None else ts.tz_convert('UTC')
     return ts.to_pydatetime()
 
 
 def to_epoch_ms(value: str) -> int:
+    """
+    Convert a date/time bound to Unix epoch milliseconds (what CCXT expects).
+
+    Args:
+        value: Same forms as `to_utc`; naive values are taken to be UTC.
+
+    Returns:
+        Milliseconds since 1970-01-01 00:00 UTC.
+    """
     return int(to_utc(value).timestamp() * 1000)
 
 
-def to_float(value: Any) -> float:
-    """float(value), with None mapped to NaN (some APIs omit fields)."""
+def to_float(value: Optional[Union[SupportsFloat, str]]) -> float:
+    """
+    Convert an API field to float, treating a missing value as NaN.
+
+    A missing value (None) is normal, since some APIs omit fields, so it
+    becomes NaN and cleaning flags the bar later. An unreadable value is
+    not normal: it usually means the API's format changed, so it raises
+    instead of hiding as NaN.
+
+    Args:
+        value: A number (int, float, Decimal, numpy number), a numeric
+            string such as '101.5', or None.
+
+    Returns:
+        `float(value)`, or NaN when `value` is None.
+
+    Raises:
+        ValueError: If `value` is a string that is not a number, e.g.
+            'abc' or ''.
+    """
     return float('nan') if value is None else float(value)
 
 
@@ -53,6 +89,8 @@ class MarketDataProvider(ABC):
         retryable: ExceptionTypes = (ConnectionError, TimeoutError),
     ):
         """
+        Set up retries, the circuit breaker and the response cache.
+
         Args:
             settings: Data settings; defaults to the global settings.
             non_retryable: Errors raised immediately (bad input, auth).
@@ -71,6 +109,17 @@ class MarketDataProvider(ABC):
         self._cache_ttl = self.settings.cache_ttl_seconds
 
     def normalize_symbol(self, symbol: str) -> str:
+        """
+        Put a symbol in the form this provider's API expects.
+
+        Subclasses override this when their API uses another format.
+
+        Args:
+            symbol: Symbol as the caller wrote it, e.g. ' aapl '.
+
+        Returns:
+            The symbol without surrounding spaces, upper-cased: 'AAPL'.
+        """
         return symbol.strip().upper()
 
     def fetch_ohlcv(
@@ -118,9 +167,33 @@ class MarketDataProvider(ABC):
         end_date: Optional[str],
         interval: str,
     ) -> List[Bar]:
-        """Fetch bars from the upstream API. Symbol and interval are normalized."""
+        """
+        Fetch bars from the upstream API. Every provider implements this.
+
+        `fetch_ohlcv` calls it through the retry/circuit-breaker executor,
+        so implementations should just raise on failure.
+
+        Args:
+            symbol: Already passed through `normalize_symbol`.
+            start_date: Inclusive start, or None for the provider default.
+            end_date: Exclusive end, or None for "up to now".
+            interval: Already canonical, e.g. '1d' or '5m'.
+
+        Returns:
+            Bars in time order as dicts with keys timestamp (ISO 8601,
+            UTC), open, high, low, close and volume.
+        """
 
     def _cache_get(self, key: tuple) -> Optional[List[Bar]]:
+        """
+        Look up a cached response, dropping it if it has expired.
+
+        Args:
+            key: (symbol, interval, start_date, end_date).
+
+        Returns:
+            A copy of the cached bars, or None on a miss or expired entry.
+        """
         entry = self._cache.get(key)
         if entry is None:
             return None
@@ -131,6 +204,13 @@ class MarketDataProvider(ABC):
         return list(data)
 
     def _cache_put(self, key: tuple, data: List[Bar]) -> None:
+        """
+        Store a response and evict expired ones. Does nothing if the TTL is 0.
+
+        Args:
+            key: (symbol, interval, start_date, end_date).
+            data: Bars to cache; a copy is stored.
+        """
         if self._cache_ttl <= 0:
             return
         now = time.monotonic()
@@ -140,6 +220,19 @@ class MarketDataProvider(ABC):
         self._cache[key] = (now, list(data))
 
     def _result(self, symbol: str, interval: str, data: List[Bar], from_cache: bool) -> Dict[str, Any]:
+        """
+        Build the response dict that `fetch_ohlcv` returns.
+
+        Args:
+            symbol: Normalized symbol.
+            interval: Canonical interval.
+            data: The bars.
+            from_cache: Whether the bars came from the cache.
+
+        Returns:
+            Dict with keys symbol, interval, data, n_bars, source and
+            from_cache.
+        """
         return {
             'symbol': symbol,
             'interval': interval,

@@ -16,6 +16,12 @@ def garman_klass_variance(df: pd.DataFrame) -> pd.Series:
         0.5 * ln(H/L)^2 - (2 ln 2 - 1) * ln(C/O)^2
 
     Non-negative for any valid bar (|ln(C/O)| <= ln(H/L)).
+
+    Args:
+        df: Bars with 'open', 'high', 'low' and 'close' columns.
+
+    Returns:
+        Variance of one bar's log return on `df.index`, not annualized.
     """
     hl = np.log(df['high'] / df['low']) ** 2
     co = np.log(df['close'] / df['open']) ** 2
@@ -29,10 +35,23 @@ def volatility_features(
     gk_windows: Sequence[int] = GARMAN_KLASS_WINDOWS,
 ) -> pd.DataFrame:
     """
-    volatility_{w}: annualized std of log returns over w bars.
-    vol_ratio_{fast}_{slow}: shortest-window volatility over longest-window volatility.
-    garman_klass_var: per-bar Garman-Klass variance (not annualized).
-    gk_volatility_{w}: annualized Garman-Klass volatility over w bars.
+    Compute annualized volatility features.
+
+    Args:
+        df: Bars for one symbol with OHLC columns, sorted by time.
+        periods_per_year: Bars in a year for this interval and market,
+            from `schema.periods_per_year` (e.g. 252 for daily stocks).
+        windows: Look-back lengths in bars for close-to-close volatility.
+        gk_windows: Look-back lengths in bars for Garman-Klass volatility.
+
+    Returns:
+        DataFrame on `df.index` with these columns:
+
+        - volatility_{w}: annualized std of log returns over w bars.
+        - vol_ratio_{fast}_{slow}: shortest-window volatility divided by
+            longest-window volatility (above 1 = volatility rising).
+        - garman_klass_var: per-bar Garman-Klass variance (not annualized).
+        - gk_volatility_{w}: annualized Garman-Klass volatility over w bars.
     """
     close = df['close']
     log_ret = np.log(close / close.shift(1))

@@ -1,6 +1,8 @@
 """Tests for the Alpaca and CCXT providers, using in-memory fakes (no network)."""
 
+import math
 from datetime import datetime, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 
 import ccxt
@@ -10,6 +12,7 @@ import requests
 
 from src.config.settings import DataSettings
 from src.market_data.providers import AlpacaDataClient, CryptoExchangeClient
+from src.market_data.providers.base import to_float
 from src.market_data.providers.ccxt_client import create_exchange
 from src.market_data.resilience import CircuitBreakerOpen
 from tests.factories import data_settings
@@ -197,3 +200,19 @@ def test_alpaca_connection_errors_are_retried():
 def test_alpaca_requires_credentials():
     with pytest.raises(ValueError, match='ALPACA_API_KEY'):
         AlpacaDataClient(data_settings())
+
+
+@pytest.mark.parametrize('value,expected', [
+    (101, 101.0),
+    ('101.5', 101.5),
+    (Decimal('2.25'), 2.25),
+])
+def test_to_float_accepts_numbers_and_numeric_strings(value, expected):
+    assert to_float(value) == expected
+
+
+def test_to_float_missing_is_nan_but_garbage_raises():
+    assert math.isnan(to_float(None))
+    for garbage in ('abc', ''):
+        with pytest.raises(ValueError):
+            to_float(garbage)

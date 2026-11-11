@@ -451,6 +451,10 @@ def get_settings() -> TradingSettings:
     Returns a cached instance to avoid re-parsing environment variables
     on every call. Call reset_settings() to force a reload (useful in
     testing scenarios).
+
+    Returns:
+        The shared `TradingSettings`, built from environment variables and
+        `.env` on the first call and reused afterwards.
     """
 
     global _settings_instance

@@ -61,10 +61,30 @@ class BaseModel(ABC):
         pass
 
     def save(self, path: str) -> None:
-        """Save model to disk for later loading."""
+        """
+        Save the trained model to disk so `load` can restore it.
+
+        Args:
+            path: File or directory to write to; the format is up to the
+                subclass.
+
+        Raises:
+            NotImplementedError: Always, unless a subclass overrides it.
+        """
         raise NotImplementedError("Subclasses must implement save()")
 
     @classmethod
     def load(cls, path: str) -> 'BaseModel':
-        """Load a model from disk."""
+        """
+        Load a model previously written by `save`.
+
+        Args:
+            path: The same file or directory passed to `save`.
+
+        Returns:
+            A ready-to-use model instance of this class.
+
+        Raises:
+            NotImplementedError: Always, unless a subclass overrides it.
+        """
         raise NotImplementedError("Subclasses must implement load()")

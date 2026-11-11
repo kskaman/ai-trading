@@ -9,6 +9,7 @@ import pytest
 from src.strategies.kalman_pairs import KalmanHedgeRatio, KalmanPairsStrategy
 from src.strategies.pairs_trading import (
     PairsTradingStrategy,
+    MIN_ROLLING_WINDOW,
     _next_position,
     check_cointegration,
     half_life,
@@ -61,11 +62,21 @@ def test_half_life_is_infinite_for_a_trending_spread():
 
 def test_rolling_spread_uses_only_past_bars():
     a, b = make_pair(n=200)
-    full = rolling_spread(a, b, window=50)
-    cut = rolling_spread(a.iloc[:120], b.iloc[:120], window=50)
+    full = rolling_spread(a, b, window=60)
+    cut = rolling_spread(a.iloc[:120], b.iloc[:120], window=60)
 
     pd.testing.assert_frame_equal(full.iloc[:120], cut)
-    assert full.iloc[:50].isna().all().all() and full.iloc[50:].notna().all().all()
+    assert full.iloc[:60].isna().all().all() and full.iloc[60:].notna().all().all()
+
+
+def test_rolling_spread_window_floors():
+    a, b = make_pair(n=200)
+    with pytest.raises(ValueError, match='at least 60'):
+        rolling_spread(a, b, window=MIN_ROLLING_WINDOW - 1)
+    # Lowering the floor on purpose is allowed, but never below 3.
+    assert rolling_spread(a, b, window=20, min_window=20).iloc[20:].notna().all().all()
+    with pytest.raises(ValueError, match='min_window'):
+        rolling_spread(a, b, window=2, min_window=2)
 
 
 def test_rolling_spread_recovers_the_hedge_ratio():
@@ -85,6 +96,7 @@ def test_rolling_spread_recovers_the_hedge_ratio():
     (1, -1.0, 1), (-1, 1.0, -1),              # between exit and entry: hold
     (1, -0.5, 0), (1, 0.0, 0), (-1, 0.3, 0),  # back near zero: take profit
     (1, -3.5, 0), (-1, 3.6, 0),               # kept diverging: stop out
+    (1, 2.5, 0), (-1, -2.5, 0),               # jumped past the mean: reason gone
 ])
 def test_next_position_transitions(position, z, expected):
     assert _next_position(position, z, entry=2.0, exit=0.5, stop=3.5) == expected
@@ -94,6 +106,13 @@ def test_hold_positions_keeps_trades_until_exit_or_stop():
     z = pd.Series([np.nan, 0.0, -2.5, -1.5, np.nan, -1.0, -0.4, 0.0, 2.2, 1.0, 3.8, 1.0])
     expected = [0, 0, 1, 1, 1, 1, 0, 0, -1, -1, 0, 0]
     assert hold_positions(z).tolist() == expected
+
+
+def test_exit_at_the_mean_closes_when_the_spread_crosses_zero():
+    # With exit=0, |z| <= 0 would need z to be exactly 0.0, so trades never closed.
+    z = pd.Series([-2.2, -1.4, -0.7, -0.1, 0.4, 1.1])
+    assert hold_positions(z, entry=2.0, exit=0.0).tolist() == [1, 1, 1, 1, 0, 0]
+    assert hold_positions(-z, entry=2.0, exit=0.0).tolist() == [-1, -1, -1, -1, 0, 0]
 
 
 def test_hold_positions_rejects_unordered_thresholds():
@@ -131,6 +150,10 @@ def test_pairs_strategy_validates_parameters():
         PairsTradingStrategy('AAA', 'AAA')
     with pytest.raises(ValueError):
         PairsTradingStrategy('AAA', 'BBB', entry_z=4.0, stop_z=3.5)
+    with pytest.raises(ValueError, match='lookback must be at least 60'):
+        PairsTradingStrategy('AAA', 'BBB', lookback=30)
+    lowered = PairsTradingStrategy('AAA', 'BBB', lookback=30, min_window=30)
+    assert lowered.get_parameters()['min_window'] == 30
 
 
 # --- Kalman ---------------------------------------------------------------

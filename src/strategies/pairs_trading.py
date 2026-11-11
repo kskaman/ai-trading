@@ -36,7 +36,41 @@ from src.market_data.panel import to_panel
 from src.strategies.base import BaseStrategy
 from src.strategies.weights import weights_to_signals
 
+# Bars needed to run the Engle-Granger cointegration test once.
 MIN_COINTEGRATION_OBS = 60
+
+# Default smallest window for the rolling hedge-ratio regression. An
+# engineering safeguard, not a statistical guarantee: 60 daily bars is about
+# three months, but 60 one-minute bars is one hour. Pass `min_window` to go
+# lower on purpose, and check any window out of sample.
+MIN_ROLLING_WINDOW = 60
+
+# A regression with one slope and one intercept needs at least 3 points to
+# leave any residual variance (it divides by window - 2). Never negotiable.
+_MATH_MIN_WINDOW = 3
+
+
+def _check_window(window: int, min_window: int, name: str) -> None:
+    """
+    Reject a regression window that is too short to trust.
+
+    Args:
+        window: The window being checked, in bars.
+        min_window: Smallest window allowed; usually `MIN_ROLLING_WINDOW`.
+        name: Parameter name for the error message, e.g. 'lookback'.
+
+    Raises:
+        ValueError: If `min_window` is below 3, or `window` is below
+            `min_window`.
+    """
+    if min_window < _MATH_MIN_WINDOW:
+        raise ValueError(f"min_window must be at least {_MATH_MIN_WINDOW}, got {min_window}")
+    if window < min_window:
+        raise ValueError(
+            f"{name} must be at least {min_window} bars for pairs trading, got {window}. "
+            "Shorter windows give unstable hedge ratios; lower `min_window` only "
+            "deliberately (e.g. for intraday research)."
+        )
 
 
 @dataclass(frozen=True)
@@ -69,6 +103,13 @@ def log_prices(price_a: pd.Series, price_b: pd.Series) -> Tuple[pd.Series, pd.Se
 
     Rows where either price is missing are dropped.
 
+    Args:
+        price_a: Prices of leg A, indexed by timestamp.
+        price_b: Prices of leg B, indexed by timestamp.
+
+    Returns:
+        (log_a, log_b): natural-log prices on their shared timestamps only.
+
     Raises:
         ValueError: If a price is zero or negative.
     """
@@ -80,7 +121,17 @@ def log_prices(price_a: pd.Series, price_b: pd.Series) -> Tuple[pd.Series, pd.Se
 
 
 def _ols(y: np.ndarray, x: np.ndarray) -> Tuple[float, float, np.ndarray, float]:
-    """Intercept, slope, residuals and R² of y on x."""
+    """
+    Fit a straight line y = intercept + slope * x by least squares.
+
+    Args:
+        y: Dependent values (e.g. log prices of leg A).
+        x: Explanatory values of the same length (e.g. log prices of leg B).
+
+    Returns:
+        (intercept, slope, residuals, r_squared). R² is NaN when y is
+        constant.
+    """
     slope, intercept = np.polyfit(x, y, 1)
     residuals = y - (intercept + slope * x)
     total = np.sum((y - y.mean()) ** 2)
@@ -90,8 +141,17 @@ def _ols(y: np.ndarray, x: np.ndarray) -> Tuple[float, float, np.ndarray, float]
 
 def half_life(spread: np.ndarray) -> float:
     """
-    Mean-reversion half-life in bars, from regressing the change in the
-    spread on its previous level. inf when the spread does not revert.
+    Estimate how fast a spread reverts to its mean.
+
+    Regresses the change in the spread on its previous level; a negative
+    slope means deviations shrink over time.
+
+    Args:
+        spread: Spread values in time order (at least 3).
+
+    Returns:
+        Bars for a deviation to halve, e.g. 10.0 means half the gap closes
+        in about 10 bars. `math.inf` when the spread does not revert.
     """
     spread = np.asarray(spread, dtype='float64')
     _, slope, _, _ = _ols(np.diff(spread), spread[:-1])
@@ -143,7 +203,12 @@ def check_cointegration(
     )
 
 
-def rolling_spread(price_a: pd.Series, price_b: pd.Series, window: int) -> pd.DataFrame:
+def rolling_spread(
+    price_a: pd.Series,
+    price_b: pd.Series,
+    window: int,
+    min_window: int = MIN_ROLLING_WINDOW,
+) -> pd.DataFrame:
     """
     Out-of-sample spread and z-score from a rolling regression.
 
@@ -154,17 +219,19 @@ def rolling_spread(price_a: pd.Series, price_b: pd.Series, window: int) -> pd.Da
     Args:
         price_a: Prices of leg A.
         price_b: Prices of leg B.
-        window: Bars in each regression (at least 3).
+        window: Bars in each regression.
+        min_window: Smallest `window` accepted (default 60, never below 3).
+            Short windows fit noise, so the hedge ratio jumps around.
 
     Returns:
         DataFrame on the aligned timestamps with columns hedge_ratio,
         intercept, spread and z_score; NaN for the first `window` bars.
 
     Raises:
-        ValueError: If window < 3 or a price is not positive.
+        ValueError: If `window` is below `min_window`, `min_window` is
+            below 3, or a price is not positive.
     """
-    if window < 3:
-        raise ValueError("window must be at least 3")
+    _check_window(window, min_window, 'window')
     y, x = log_prices(price_a, price_b)
     var_x = x.rolling(window).var()
     cov = x.rolling(window).cov(y)
@@ -192,15 +259,39 @@ def _next_position(position: int, z: float, entry: float, exit: float, stop: flo
             -1 short the spread, 0 flat.
         z: This bar's spread z-score (never NaN here).
         entry: Open when |z| reaches this.
-        exit: Close a trade when |z| falls back to this.
+        exit: Close a trade once the spread has come back to within `exit`
+            of the mean or gone past it: a long closes when z >= -exit, a
+            short when z <= exit. So exit=0 means "close on crossing the
+            mean", and a one-bar jump across the mean also closes.
         stop: Close a trade (and never open one) when |z| reaches this.
 
     Returns:
         The position to hold after this bar: -1, 0 or +1.
     """
-    # TODO(human): implement the entry / hold / exit / stop transitions.
-    raise NotImplementedError
+    # 1. Stop-loss: close any existing position.
+    # Do not open a new trade beyond the stop threshold.
+    if abs(z) >= stop:
+        return 0
+    
+    # 2. Directional exit for existing positions
+    if position == 1 and z >= -exit:
+        return 0
 
+    if position == -1 and z <= exit:
+        return 0
+    
+    # 3. Continue holding an existing position
+    if position != 0:
+        return position
+
+    # 4. Enter a new position if currently flat
+    if z <= -entry:
+        return 1
+
+    if z >= entry:
+        return -1
+
+    return 0
 
 def hold_positions(
     z_score: pd.Series, entry: float = 2.0, exit: float = 0.5, stop: float = 3.5
@@ -242,6 +333,17 @@ def pair_weights(
     Long the spread holds 1 / (1 + |b|) in A and -b / (1 + |b|) in B, where
     b is the hedge ratio on that bar. Bars without a position or hedge ratio
     (missing prices) keep the previous values.
+
+    Args:
+        position: Spread position per bar: +1 long, -1 short, 0 flat.
+        hedge_ratio: Units of log B per unit of log A on each bar.
+        symbol_a: Column name for leg A in the output.
+        symbol_b: Column name for leg B in the output.
+
+    Returns:
+        Weights panel with columns `symbol_a` and `symbol_b`; |w_a| + |w_b|
+        is 1 when in a trade and 0 when flat (or before the first hedge
+        ratio).
     """
     position = position.ffill().fillna(0.0)
     hedge_ratio = hedge_ratio.ffill()
@@ -266,15 +368,22 @@ class PairsTradingStrategy(BaseStrategy):
         entry_z: float = 2.0,
         exit_z: float = 0.5,
         stop_z: float = 3.5,
+        min_window: int = MIN_ROLLING_WINDOW,
     ):
         """
+        Store and validate the pair and its trading thresholds.
+
         Args:
             symbol_a: Leg A (regressed on B).
             symbol_b: Leg B (the hedge).
-            lookback: Bars in the rolling hedge-ratio regression.
+            lookback: Bars in the rolling hedge-ratio regression. 100-120
+                daily bars are worth testing; longer windows are steadier but
+                react more slowly when the relationship changes.
             entry_z: |z| that opens a trade.
             exit_z: |z| at or below which a trade closes.
             stop_z: |z| at or above which a trade closes at a loss.
+            min_window: Smallest `lookback` accepted (default 60, never
+                below 3). Lower it only on purpose, e.g. for intraday bars.
 
         Raises:
             ValueError: If a parameter is out of range (see `validate`).
@@ -285,10 +394,17 @@ class PairsTradingStrategy(BaseStrategy):
         self.entry_z = entry_z
         self.exit_z = exit_z
         self.stop_z = stop_z
+        self.min_window = min_window
         self.validate()
 
     def get_parameters(self) -> Dict[str, Any]:
-        """Parameters for experiment tracking."""
+        """
+        Report the parameters for experiment tracking.
+
+        Returns:
+            Dict of symbol_a, symbol_b, lookback, entry_z, exit_z, stop_z
+            and min_window.
+        """
         return {
             'symbol_a': self.symbol_a,
             'symbol_b': self.symbol_b,
@@ -296,20 +412,24 @@ class PairsTradingStrategy(BaseStrategy):
             'entry_z': self.entry_z,
             'exit_z': self.exit_z,
             'stop_z': self.stop_z,
+            'min_window': self.min_window,
         }
 
     def validate(self) -> bool:
         """
         Check parameter ranges.
 
+        Returns:
+            True when every parameter is valid.
+
         Raises:
-            ValueError: If the symbols are equal, lookback < 3, or the
-                thresholds are not 0 <= exit_z < entry_z < stop_z.
+            ValueError: If the symbols are equal, lookback is below
+                min_window (or min_window below 3), or the thresholds are
+                not 0 <= exit_z < entry_z < stop_z.
         """
         if self.symbol_a == self.symbol_b:
             raise ValueError("symbol_a and symbol_b must differ")
-        if self.lookback < 3:
-            raise ValueError("lookback must be at least 3")
+        _check_window(self.lookback, self.min_window, 'lookback')
         if not 0 <= self.exit_z < self.entry_z < self.stop_z:
             raise ValueError("Thresholds must satisfy 0 <= exit_z < entry_z < stop_z")
         return True
@@ -320,8 +440,15 @@ class PairsTradingStrategy(BaseStrategy):
 
         Args:
             prices: Close-price panel containing both symbols.
+
+        Returns:
+            DataFrame on the timestamps where both symbols have prices,
+            with columns hedge_ratio, intercept, spread, z_score (see
+            `rolling_spread`) and position (-1, 0, +1).
         """
-        frame = rolling_spread(prices[self.symbol_a], prices[self.symbol_b], self.lookback)
+        frame = rolling_spread(
+            prices[self.symbol_a], prices[self.symbol_b], self.lookback, self.min_window
+        )
         frame['position'] = hold_positions(
             frame['z_score'], self.entry_z, self.exit_z, self.stop_z
         )
@@ -333,6 +460,10 @@ class PairsTradingStrategy(BaseStrategy):
 
         Args:
             prices: Close-price panel containing both symbols.
+
+        Returns:
+            Weights panel on `prices.index` with columns symbol_a and
+            symbol_b (see `pair_weights`).
         """
         frame = self.spread(prices).reindex(prices.index)
         return pair_weights(
@@ -348,5 +479,9 @@ class PairsTradingStrategy(BaseStrategy):
         Args:
             data: Long OHLCV frame containing both symbols.
             features: Unused.
+
+        Returns:
+            Signal rows with columns timestamp, symbol, signal_type and
+            strength (see `weights_to_signals`).
         """
         return weights_to_signals(self.target_weights(to_panel(data)))

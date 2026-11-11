@@ -67,6 +67,15 @@ def test_annualization_depends_on_market(bars):
     assert ratio.to_numpy() == pytest.approx(np.sqrt(365 / 252))
 
 
+def test_periods_per_year_override_rescales_volatility(bars):
+    default = FeatureEngineer(interval='1h').compute_all_features(bars)
+    measured = FeatureEngineer(interval='1h', periods_per_year=252 * 16).compute_all_features(bars)
+    ratio = (measured['volatility_20'] / default['volatility_20']).dropna()
+    assert ratio.to_numpy() == pytest.approx(np.sqrt(16 / 7))
+    with pytest.raises(ValueError):
+        FeatureEngineer(periods_per_year=0)
+
+
 def test_feature_names_exclude_input_columns(bars):
     engineer = FeatureEngineer()
     out = engineer.compute_all_features(bars)

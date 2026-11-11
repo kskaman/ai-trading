@@ -12,7 +12,17 @@ import pandas as pd
 
 
 def log_returns(close: pd.Series) -> pd.Series:
-    """Bar-to-bar log returns; non-positive prices give NaN instead of -inf."""
+    """
+    Compute bar-to-bar log returns.
+
+    Args:
+        close: Closing prices for one symbol, sorted by time.
+
+    Returns:
+        ln(close / previous close) on `close.index`. The first row is NaN,
+        and so is any return touching a zero or negative price (instead
+        of -inf).
+    """
     positive = close.where(close > 0)
     return np.log(positive / positive.shift(1))
 
@@ -31,6 +41,16 @@ def flag_return_outliers(
     it, the bar would inflate its own standard deviation and the z-score
     could never exceed (n-1)/sqrt(n), which is 6.93 for n=50, so any
     threshold above that would never fire.
+
+    Args:
+        close: Closing prices for one symbol, sorted by time.
+        window: How many previous returns form the "normal" distribution.
+        min_periods: Fewest previous returns needed before scoring;
+            earlier bars are never flagged.
+        max_z: Flag threshold in standard deviations.
+
+    Returns:
+        Boolean Series named 'is_outlier' on `close.index`.
     """
     returns = log_returns(close)
     prior = returns.shift(1)
@@ -50,6 +70,17 @@ def flag_stale_volume(
     True where volume is below `min_fraction` of the median volume of the
     previous `window` bars (a likely stale or partial bar). Zero-volume bars
     are always flagged once enough history exists.
+
+    Args:
+        volume: Volume per bar for one symbol, sorted by time.
+        window: How many previous bars form the median.
+        min_periods: Fewest previous bars needed before scoring; earlier
+            bars are never flagged.
+        min_fraction: Flag bars whose volume is below this fraction of
+            the median, e.g. 0.1 = under 10%.
+
+    Returns:
+        Boolean Series named 'is_stale' on `volume.index`.
     """
     median = volume.shift(1).rolling(window, min_periods=min_periods).median()
     return (volume < median * min_fraction).rename('is_stale')

@@ -5,11 +5,7 @@ tools to measure them. Each one takes a **price panel** (one column per
 symbol) and returns **target weights**. Signals, backtests and metrics are
 all built from those weights.
 
-```text
- store ──► load_panel() ──► strategy.target_weights() ──► portfolio_returns() ──► PerformanceAnalyzer
-            prices panel        weights panel                returns per bar         Sharpe, drawdown,
-                                                             (after costs)           deflated Sharpe
-```
+[![Strategy research backtest](diagrams/strategy-backtest.svg)](diagrams/strategy-backtest.html)
 
 For runnable code see [Backtest a strategy](guides.md#backtest-a-strategy).
 

@@ -29,6 +29,15 @@ def cross_sectional_zscore(frame: pd.DataFrame) -> pd.DataFrame:
     Standardize each row across symbols: (value - row mean) / row std.
 
     Rows with fewer than two values, or no spread at all, become NaN.
+
+    Args:
+        frame: Panel of values, one row per bar and one column per symbol
+            (e.g. raw factor scores). NaN cells are ignored in the row
+            mean and std.
+
+    Returns:
+        Panel of z-scores with the same shape: 0 is the row average, +1 is
+        one standard deviation above it.
     """
     std = frame.std(axis=1, ddof=1)
     return frame.sub(frame.mean(axis=1), axis=0).div(std.where(std > 0), axis=0)

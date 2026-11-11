@@ -34,12 +34,33 @@ _PARTITION_FORMATS = {'day': '%Y-%m-%d', 'month': '%Y-%m', 'year': '%Y'}
 
 
 def _quoted(columns: Iterable[str]) -> str:
-    # "timestamp" and "interval" are SQL type names; quote every identifier.
+    """
+    Quote column names for SQL.
+
+    "timestamp" and "interval" are SQL type names, so every identifier is
+    quoted to be safe.
+
+    Args:
+        columns: Column names, e.g. ('symbol', 'timestamp').
+
+    Returns:
+        A comma-separated list, e.g. '"symbol", "timestamp"'.
+    """
     return ', '.join(f'"{c}"' for c in columns)
 
 
 def _utc_naive(value: str) -> datetime:
-    """Parse a date/time bound and express it as naive UTC (naive input is UTC)."""
+    """
+    Convert a date/time bound to naive UTC, the form the database stores.
+
+    Args:
+        value: A date or datetime string. Naive values are taken to be UTC;
+            ones with an offset are converted to UTC.
+
+    Returns:
+        A `datetime` in UTC without tzinfo, ready to compare with the
+        TIMESTAMP columns.
+    """
     ts = pd.Timestamp(value)
     if ts.tzinfo is not None:
         ts = ts.tz_convert('UTC').tz_localize(None)
@@ -47,6 +68,18 @@ def _utc_naive(value: str) -> datetime:
 
 
 def _check_partition(partition_by: str) -> str:
+    """
+    Validate a Parquet partitioning choice.
+
+    Args:
+        partition_by: 'day', 'month' or 'year'.
+
+    Returns:
+        The same string, so it can be used inline.
+
+    Raises:
+        ValueError: If the value is not one of the three.
+    """
     if partition_by not in _PARTITION_FORMATS:
         raise ValueError(
             f"partition_by must be one of {sorted(_PARTITION_FORMATS)}, got '{partition_by}'"
@@ -55,7 +88,16 @@ def _check_partition(partition_by: str) -> str:
 
 
 def symbol_dir(symbol: str) -> str:
-    """Filesystem-safe directory name: 'BTC/USDT' -> 'btc_usdt'."""
+    """
+    Turn a symbol into a safe directory name for Parquet exports.
+
+    Args:
+        symbol: Ticker or pair, e.g. 'AAPL' or 'BTC/USDT'.
+
+    Returns:
+        Lower-case name with runs of other characters replaced by '_',
+        e.g. 'aapl' or 'btc_usdt'. Dots are kept ('brk.b').
+    """
     return re.sub(r'[^a-z0-9.]+', '_', symbol.lower()).strip('_')
 
 
@@ -74,6 +116,19 @@ class FinancialDataStore:
         parquet_dir: Optional[str] = None,
         partition_by: Optional[str] = None,
     ):
+        """
+        Open (or create) the database and make sure the tables exist.
+
+        Args:
+            db_path: DuckDB file path, or ':memory:' for a throwaway store
+                (handy in tests). Missing parent folders are created.
+            parquet_dir: Root folder for Parquet exports; created if missing.
+            partition_by: How exports are split into files: 'day', 'month'
+                or 'year'.
+
+        Raises:
+            ValueError: If `partition_by` is not one of the three.
+        """
         if db_path is None or parquet_dir is None or partition_by is None:
             from src.config.settings import get_settings
             data_settings = get_settings().data
@@ -91,9 +146,22 @@ class FinancialDataStore:
         self._init_tables()
 
     def __enter__(self) -> 'FinancialDataStore':
+        """
+        Use the store in a `with` block.
+
+        Returns:
+            The store itself.
+        """
         return self
 
     def __exit__(self, *exc_info) -> None:
+        """
+        Close the database when the `with` block ends, even on error.
+
+        Args:
+            *exc_info: Exception type, value and traceback (unused; any
+                exception keeps propagating).
+        """
         self.close()
 
     def _init_tables(self) -> None:
@@ -239,7 +307,17 @@ class FinancialDataStore:
         return str(out_dir)
 
     def query_parquet(self, symbol: str, interval: str = '1d') -> pd.DataFrame:
-        """Read a symbol's exported Parquet files (empty frame if none exist)."""
+        """
+        Read back the Parquet files written by `export_to_parquet`.
+
+        Args:
+            symbol: Ticker or pair, e.g. 'AAPL' or 'BTC/USDT'.
+            interval: Bar size, e.g. '1d'.
+
+        Returns:
+            All exported bars sorted by time, with UTC-aware timestamps.
+            An empty frame with the raw columns if nothing was exported.
+        """
         directory = self.parquet_dir / symbol_dir(symbol) / normalize_interval(interval)
         if not any(directory.glob('*.parquet')):
             return pd.DataFrame(columns=list(_RAW_COLUMNS))
@@ -250,6 +328,16 @@ class FinancialDataStore:
         )
 
     def _fetch(self, sql: str, params: List[object]) -> pd.DataFrame:
+        """
+        Run a query and turn the stored naive-UTC timestamps back into UTC-aware ones.
+
+        Args:
+            sql: Query with `?` placeholders; must return a 'timestamp' column.
+            params: Values for the placeholders, in order.
+
+        Returns:
+            The result as a DataFrame with 'timestamp' as datetime64[ns, UTC].
+        """
         df = self.con.execute(sql, params).fetchdf()
         df['timestamp'] = (
             pd.to_datetime(df['timestamp']).dt.tz_localize('UTC').dt.as_unit('ns')

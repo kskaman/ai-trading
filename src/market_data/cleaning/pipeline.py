@@ -32,6 +32,16 @@ class CleaningReport:
 
     @classmethod
     def from_frame(cls, df: pd.DataFrame) -> 'CleaningReport':
+        """
+        Count the flags in a frame returned by `clean_ohlcv`.
+
+        Args:
+            df: Cleaned bars with 'is_outlier', 'is_stale' and
+                'ohlc_valid' columns.
+
+        Returns:
+            A report with the total bar count and each flag's count.
+        """
         return cls(
             n_bars=len(df),
             n_outliers=int(df['is_outlier'].sum()),
@@ -40,6 +50,13 @@ class CleaningReport:
         )
 
     def __str__(self) -> str:
+        """
+        Summarize the counts for logs.
+
+        Returns:
+            One line, e.g. '250 bars: 2 return outliers, 1 stale (low
+            volume), 0 invalid OHLC'.
+        """
         return (
             f"{self.n_bars} bars: {self.n_outliers} return outliers, "
             f"{self.n_stale} stale (low volume), {self.n_invalid_ohlc} invalid OHLC"

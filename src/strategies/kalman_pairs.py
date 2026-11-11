@@ -161,7 +161,13 @@ class KalmanPairsStrategy(BaseStrategy):
         self.kalman = KalmanHedgeRatio(delta=delta, warmup=warmup)
 
     def get_parameters(self) -> Dict[str, Any]:
-        """Parameters for experiment tracking."""
+        """
+        Report the parameters for experiment tracking.
+
+        Returns:
+            Dict of symbol_a, symbol_b, delta, warmup, entry_z, exit_z and
+            stop_z.
+        """
         return {
             'symbol_a': self.symbol_a,
             'symbol_b': self.symbol_b,
@@ -178,6 +184,10 @@ class KalmanPairsStrategy(BaseStrategy):
 
         Args:
             prices: Close-price panel containing both symbols.
+
+        Returns:
+            The `KalmanHedgeRatio.filter` columns (hedge_ratio, intercept,
+            spread, spread_std, z_score) plus position (-1, 0, +1).
         """
         frame = self.kalman.filter(prices[self.symbol_a], prices[self.symbol_b])
         frame['position'] = hold_positions(
@@ -191,6 +201,10 @@ class KalmanPairsStrategy(BaseStrategy):
 
         Args:
             prices: Close-price panel containing both symbols.
+
+        Returns:
+            Weights panel on `prices.index` with columns symbol_a and
+            symbol_b (see `pair_weights`).
         """
         frame = self.spread(prices).reindex(prices.index)
         return pair_weights(
@@ -206,5 +220,9 @@ class KalmanPairsStrategy(BaseStrategy):
         Args:
             data: Long OHLCV frame containing both symbols.
             features: Unused.
+
+        Returns:
+            Signal rows with columns timestamp, symbol, signal_type and
+            strength (see `weights_to_signals`).
         """
         return weights_to_signals(self.target_weights(to_panel(data)))

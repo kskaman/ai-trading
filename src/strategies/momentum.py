@@ -41,6 +41,8 @@ class CrossSectionalMomentum(BaseStrategy):
         n_short: int = 10,
     ):
         """
+        Store and validate the ranking and rebalancing parameters.
+
         Args:
             lookback: Bars of return used to rank symbols.
             skip: Most recent bars left out of the ranking window.
@@ -59,7 +61,12 @@ class CrossSectionalMomentum(BaseStrategy):
         self.validate()
 
     def get_parameters(self) -> Dict[str, Any]:
-        """Parameters for experiment tracking."""
+        """
+        Report the parameters for experiment tracking.
+
+        Returns:
+            Dict of lookback, skip, rebalance_every, n_long and n_short.
+        """
         return {
             'lookback': self.lookback,
             'skip': self.skip,
@@ -71,6 +78,9 @@ class CrossSectionalMomentum(BaseStrategy):
     def validate(self) -> bool:
         """
         Check parameter ranges.
+
+        Returns:
+            True when every parameter is valid.
 
         Raises:
             ValueError: If lookback < 1, skip < 0, rebalance_every < 1, a
@@ -84,11 +94,14 @@ class CrossSectionalMomentum(BaseStrategy):
 
     def scores(self, prices: pd.DataFrame) -> pd.DataFrame:
         """
-        Momentum score: price `skip` bars ago / price `lookback + skip` bars
-        ago - 1. NaN until enough history exists.
+        Score each symbol by its past return, skipping the most recent bars.
 
         Args:
             prices: Close-price panel (see src.market_data.panel).
+
+        Returns:
+            Panel shaped like `prices`: price `skip` bars ago / price
+            `lookback + skip` bars ago - 1. NaN until enough history exists.
         """
         return prices.shift(self.skip) / prices.shift(self.lookback + self.skip) - 1
 
@@ -115,5 +128,10 @@ class CrossSectionalMomentum(BaseStrategy):
         Args:
             data: Bars with 'timestamp', 'symbol' and 'close' columns.
             features: Unused; momentum only needs prices.
+
+        Returns:
+            Signal rows with columns timestamp, symbol, signal_type
+            (LONG_ENTER / LONG_EXIT / SHORT_ENTER / SHORT_EXIT) and strength
+            (see `weights_to_signals`).
         """
         return weights_to_signals(self.target_weights(to_panel(data)))

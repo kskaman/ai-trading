@@ -5,8 +5,8 @@ import pandas as pd
 import pytest
 
 from src.market_data.schema import (
-    bars_to_frame, normalize_interval, ohlc_valid_mask, periods_per_year,
-    require_single_symbol,
+    bars_to_frame, estimate_periods_per_year, normalize_interval, ohlc_valid_mask,
+    periods_per_year, require_single_symbol,
 )
 
 
@@ -77,6 +77,10 @@ def test_bars_without_timestamp_are_dropped():
     (0, 0, 0, 0, 10, False),           # non-positive prices
     (100, 101, 99, 100, -1, False),    # negative volume
     (100, 101, 99, np.nan, 10, False), # missing close
+    (np.inf, np.inf, np.inf, np.inf, 10, False),  # all +inf passes every comparison
+    (100, np.inf, 99, 100, 10, False), # infinite high
+    (100, 101, 99, 100, np.inf, False), # infinite volume
+    (100, 101, -np.inf, 100, 10, False), # -inf low
 ])
 def test_ohlc_valid_mask(o, h, l, c, v, valid):
     df = pd.DataFrame({'open': [o], 'high': [h], 'low': [l], 'close': [c], 'volume': [v]})
@@ -95,9 +99,38 @@ def test_normalize_interval_accepts_alpaca_names():
     ('1d', 'crypto', 365),
     ('1h', 'crypto', 365 * 24),
     ('5m', 'equity', 252 * 78),
+    ('1h', 'equity', 252 * 7),   # 09:30 partial bar + 10:00..15:00
+    ('4h', 'equity', 252 * 2),   # whole bars, never 1.625 per session
 ])
 def test_periods_per_year(interval, market, expected):
     assert periods_per_year(interval, market) == pytest.approx(expected)
+
+
+def _session_bars(day, times):
+    """UTC timestamps for New York wall-clock `times` on `day`."""
+    return [pd.Timestamp(f'{day} {t}', tz='America/New_York').tz_convert('UTC') for t in times]
+
+
+def test_estimate_periods_per_year_follows_the_data():
+    regular = ['09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00']
+    extended = [f'{h:02d}:00' for h in range(4, 20)]  # 04:00..19:00, 16 bars
+    days = pd.bdate_range('2024-03-04', periods=10).strftime('%Y-%m-%d')
+
+    regular_ts = [t for d in days for t in _session_bars(d, regular)]
+    regular_ts += _session_bars('2024-03-18', regular[:4])  # a half day
+    assert estimate_periods_per_year(regular_ts, 'equity') == 252 * 7
+
+    extended_ts = [t for d in days for t in _session_bars(d, extended)]
+    assert estimate_periods_per_year(extended_ts, 'equity') == 252 * 16
+
+
+def test_estimate_periods_per_year_daily_and_crypto():
+    daily = pd.date_range('2024-01-02', periods=20, freq='B', tz='America/New_York')
+    assert estimate_periods_per_year(daily, 'equity') == 252
+    hourly = pd.date_range('2024-01-01', periods=24 * 5, freq='h', tz='UTC')
+    assert estimate_periods_per_year(hourly, 'crypto') == 365 * 24
+    with pytest.raises(ValueError):
+        estimate_periods_per_year([], 'equity')
 
 
 def test_unknown_market_raises():

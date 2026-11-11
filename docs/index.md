@@ -15,6 +15,20 @@ trading are not built yet.
 | Understand a strategy or a performance metric | [Strategies](strategies.md) |
 | Add API keys or change a setting | [Configuration](configuration.md) |
 | Look up a class or function | [API reference](reference/ingest.md) |
+| See it as a picture | [Diagrams](#diagrams) below |
+
+## Diagrams
+
+Interactive pages: search, focus a node, switch light/dark, export.
+
+| Diagram | Shows |
+|---|---|
+| [System overview](diagrams/system-overview.html) | Every component, external service and how they connect |
+| [Ingestion pipeline](diagrams/ingestion-pipeline.html) | `ingest()` from routing to a clean DataFrame, with failover |
+| [Strategy backtest](diagrams/strategy-backtest.html) | Store → panel → weights → returns → metrics |
+| [Retry and circuit breaker](diagrams/retry-circuit-breaker.html) | `ResilientExecutor` states and transitions |
+| [WebSocket feed](diagrams/websocket-feed.html) | Connect, authenticate, stream, reconnect, give up |
+| [Broker execution](diagrams/broker-execution.html) | Account queries vs. market orders, and which are retried |
 
 ## What exists today
 

@@ -60,6 +60,7 @@ class DependencyContainer:
     """
 
     def __init__(self):
+        """Create an empty container with no registered components."""
         self._factories: Dict[str, Callable] = {}
         self._instances: Dict[str, Any] = {}
         self._scopes: Dict[str, str] = {}

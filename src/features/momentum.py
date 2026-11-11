@@ -14,6 +14,13 @@ def rsi(close: pd.Series, period: int) -> pd.Series:
 
     100 when the window had gains but no losses, 50 when prices were flat,
     NaN until `period` price changes are available.
+
+    Args:
+        close: Closing prices for one symbol, sorted by time.
+        period: Smoothing length in bars, e.g. 14.
+
+    Returns:
+        RSI on `close.index`, between 0 (all losses) and 100 (all gains).
     """
     delta = close.diff()
     gain = delta.clip(lower=0)
@@ -28,10 +35,21 @@ def rsi(close: pd.Series, period: int) -> pd.Series:
 
 def momentum_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    ma_crossover_{fast}_{slow}: fast SMA / slow SMA - 1.
-    price_vs_ma_{p}: close / SMA(p) - 1.
-    rsi_{p}: Wilder's RSI.
-    macd, macd_signal, macd_histogram: 12/26/9 MACD in price units.
+    Compute trend and momentum features from closing prices.
+
+    Args:
+        df: Bars for one symbol with a 'close' column, sorted by time.
+
+    Returns:
+        DataFrame on `df.index` with these columns (NaN until each
+        window has filled):
+
+        - ma_crossover_{fast}_{slow}: fast SMA / slow SMA - 1, for each
+            pair in `MA_CROSSOVERS`.
+        - price_vs_ma_{p}: close / SMA(p) - 1, for each p in
+            `PRICE_VS_MA_PERIODS`.
+        - rsi_{p}: Wilder's RSI, for each p in `RSI_PERIODS`.
+        - macd, macd_signal, macd_histogram: 12/26/9 MACD in price units.
     """
     close = df['close']
     out = {}
